@@ -96,11 +96,16 @@ app.use("/api/admin", adminRoutes);
 // Static Admin Dashboard
 if (fs.existsSync(dashboardDist)) {
   app.use("/admin", express.static(dashboardDist));
-  app.get(["/admin", "/admin/*"], (req, res) => {
-    res.sendFile(path.join(dashboardDist, "index.html"));
-  });
-  app.get("/", (req, res) => {
-    res.redirect("/admin");
+  app.use((req, res, next) => {
+    if (req.method === "GET") {
+      if (req.path === "/") {
+        return res.redirect("/admin");
+      }
+      if (req.path.startsWith("/admin")) {
+        return res.sendFile(path.join(dashboardDist, "index.html"));
+      }
+    }
+    next();
   });
 }
 
