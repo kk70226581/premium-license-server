@@ -24,7 +24,12 @@ const app = express();
 
 // Security hardening
 app.disable("x-powered-by");
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+  })
+);
 
 // Cross-Origin Resource Sharing
 const allowedOrigins = [

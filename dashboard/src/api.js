@@ -3,7 +3,12 @@ const STORAGE_USER_KEY = "admin_license_user";
 const STORAGE_API_BASE = "admin_license_api_base";
 
 export function getApiBase() {
-  return localStorage.getItem(STORAGE_API_BASE) || "https://premium-license-server.onrender.com/api";
+  const custom = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_API_BASE) : null;
+  if (custom) return custom;
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
+    return `${window.location.origin}/api`;
+  }
+  return "https://premium-license-server.onrender.com/api";
 }
 
 export function setApiBase(url) {
@@ -15,12 +20,16 @@ export function setApiBase(url) {
 }
 
 export function getStoredAuth() {
-  const token = localStorage.getItem(STORAGE_TOKEN_KEY);
-  const user = localStorage.getItem(STORAGE_USER_KEY);
-  return {
-    token,
-    user: user ? JSON.parse(user) : null
-  };
+  try {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_TOKEN_KEY) : null;
+    const user = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_USER_KEY) : null;
+    return {
+      token,
+      user: user ? JSON.parse(user) : null
+    };
+  } catch {
+    return { token: null, user: null };
+  }
 }
 
 export function storeAuth(token, user) {
