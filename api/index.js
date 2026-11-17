@@ -1,13 +1,11 @@
 import app from "../src/server.js";
 import { connectDB } from "../src/config/database.js";
 
-let isDbConnected = false;
-
 export default async function handler(req, res) {
-  if (!isDbConnected) {
+  try {
     await connectDB();
-    isDbConnected = true;
+  } catch (error) {
+    console.error("[Serverless Handler] Database connection error:", error.message);
   }
   return app(req, res);
 }
-

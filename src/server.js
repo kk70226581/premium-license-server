@@ -72,7 +72,12 @@ app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/activate", authLimiter);
 
 // Health check endpoint
-app.get("/api/health", (req, res) => {
+app.get("/api/health", async (req, res) => {
+  if (mongoose.connection.readyState !== 1) {
+    try {
+      await connectDB();
+    } catch {}
+  }
   const isDbReady = mongoose.connection.readyState === 1;
   res.json({
     success: true,
