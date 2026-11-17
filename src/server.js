@@ -4,7 +4,14 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import mongoose from "mongoose";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import { connectDB } from "./config/database.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const dashboardDist = path.join(__dirname, "../dashboard/dist");
 
 // Routes
 import authRoutes from "./routes/auth.routes.js";
@@ -85,6 +92,17 @@ app.use("/api/auth", authRoutes);
 app.use("/api/device", deviceRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/admin", adminRoutes);
+
+// Static Admin Dashboard
+if (fs.existsSync(dashboardDist)) {
+  app.use("/admin", express.static(dashboardDist));
+  app.get(["/admin", "/admin/*"], (req, res) => {
+    res.sendFile(path.join(dashboardDist, "index.html"));
+  });
+  app.get("/", (req, res) => {
+    res.redirect("/admin");
+  });
+}
 
 // 404 Route handler
 app.use((req, res) => {
