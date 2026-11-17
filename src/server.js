@@ -31,22 +31,13 @@ app.use(
   })
 );
 
-// Cross-Origin Resource Sharing
-const allowedOrigins = [
-  process.env.ADMIN_ORIGIN || "http://localhost:5173",
-  "http://localhost:3000"
-];
-
+// Cross-Origin Resource Sharing (allows desktop clients, localhost, Vercel, and Render dashboards)
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Allow desktop client requests (no origin header) and configured web origins
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error("CORS policy violation: Origin not allowed"));
-    },
-    credentials: true
+    origin: true,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
 
