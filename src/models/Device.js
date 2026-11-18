@@ -24,12 +24,12 @@ const deviceSchema = new mongoose.Schema(
     },
     publicKey: {
       type: String,
-      required: true,
+      default: null,
       trim: true
     },
     status: {
       type: String,
-      enum: ["ACTIVE", "BLOCKED"],
+      enum: ["ACTIVE", "BLOCKED", "REVOKED"],
       default: "ACTIVE",
       index: true
     },

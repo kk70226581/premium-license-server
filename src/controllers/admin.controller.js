@@ -341,6 +341,323 @@ export async function revokeUserSessions(req, res, next) {
 }
 
 /**
+ * Create a new user account with generated or specified credentials
+ */
+export async function createUser(req, res, next) {
+  try {
+    let {
+      username,
+      password,
+      lockCode,
+      plan = "STANDARD",
+      durationDays = 30,
+      maxDevices = 2,
+      notes,
+      email
+    } = req.body;
+
+    // Auto-generate username if empty
+    if (!username || !username.trim()) {
+      username = "user_" + Math.random().toString(36).substring(2, 8);
+    }
+    username = username.toLowerCase().trim();
+
+    // Auto-generate password if empty
+    if (!password || !password.trim()) {
+      password = "Hrx@" + Math.floor(100000 + Math.random() * 900000);
+    }
+    password = password.trim();
+
+    if (lockCode) {
+      lockCode = String(lockCode).trim();
+    }
+
+    // Check existing
+    const existing = await User.findOne({ username });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: `Username '${username}' is already taken. Please choose another or generate one.`,
+        code: "USERNAME_TAKEN"
+      });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const duration = parseInt(durationDays) || 30;
+    const expiryDate = new Date(Date.now() + duration * 24 * 60 * 60 * 1000);
+
+    const user = await User.create({
+      username,
+      passwordHash,
+      plainPasswordPreview: password,
+      lockCode: lockCode || null,
+      status: "ACTIVE",
+      maxDevices: parseInt(maxDevices) || 2,
+      metadata: {
+        email: email || undefined,
+        notes: notes || `Created by admin ${req.admin?.username || "console"}`
+      }
+    });
+
+    const subscription = await Subscription.create({
+      userId: user._id,
+      plan: plan.toUpperCase(),
+      status: "ACTIVE",
+      expiryDate,
+      startDate: new Date()
+    });
+
+    user.currentSubscriptionId = subscription._id;
+    await user.save();
+
+    await AuditLog.create({
+      action: "USER_CREATED_BY_ADMIN",
+      actorType: "ADMIN",
+      actorId: req.admin._id,
+      targetType: "USER",
+      targetId: user._id,
+      details: {
+        username: user.username,
+        plan,
+        durationDays: duration,
+        maxDevices: user.maxDevices,
+        hasLockCode: Boolean(lockCode)
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Customer account created successfully",
+      user: {
+        id: user._id,
+        username: user.username,
+        plainPasswordPreview: user.plainPasswordPreview,
+        lockCode: user.lockCode,
+        status: user.status,
+        maxDevices: user.maxDevices,
+        currentSubscriptionId: subscription
+      },
+      credentials: {
+        username: user.username,
+        password: password,
+        lockCode: lockCode || "None (Optional)",
+        expiryDate: expiryDate.toISOString(),
+        serverUrl: "https://kk-auth.vercel.app"
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Update user account (modify username, password, lock code, max devices, status, expiry)
+ */
+export async function updateUser(req, res, next) {
+  try {
+    const { id } = req.params;
+    const {
+      username,
+      password,
+      lockCode,
+      maxDevices,
+      status,
+      durationDays,
+      expiryDate,
+      notes,
+      email
+    } = req.body;
+
+    const user = await User.findById(id).populate("currentSubscriptionId");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // 1. Update username if changed
+    if (username && username.toLowerCase().trim() !== user.username) {
+      const cleanUsername = username.toLowerCase().trim();
+      const existing = await User.findOne({ username: cleanUsername, _id: { $ne: user._id } });
+      if (existing) {
+        return res.status(400).json({
+          success: false,
+          message: `Username '${cleanUsername}' is already taken by another account.`
+        });
+      }
+      user.username = cleanUsername;
+    }
+
+    // 2. Update password if provided
+    if (password && password.trim()) {
+      user.passwordHash = await hashPassword(password.trim());
+      user.plainPasswordPreview = password.trim();
+    }
+
+    // 3. Update lock code (3-digit PIN)
+    if (lockCode !== undefined) {
+      user.lockCode = lockCode ? String(lockCode).trim() : null;
+    }
+
+    // 4. Update max devices
+    if (maxDevices !== undefined) {
+      const parsedMax = parseInt(maxDevices);
+      if (parsedMax >= 1) {
+        user.maxDevices = parsedMax;
+      }
+    }
+
+    // 5. Update status
+    if (status && ["ACTIVE", "BLOCKED", "PENDING_ACTIVATION"].includes(status)) {
+      user.status = status;
+      if (status === "BLOCKED") {
+        await revokeAllUserSessions(user._id);
+      }
+    }
+
+    // 6. Update metadata
+    if (notes !== undefined || email !== undefined) {
+      user.metadata = {
+        ...user.metadata,
+        ...(email !== undefined ? { email } : {}),
+        ...(notes !== undefined ? { notes } : {})
+      };
+    }
+
+    // 7. Update subscription expiry date if requested
+    if (expiryDate || durationDays) {
+      let sub = await Subscription.findOne({ userId: user._id, status: "ACTIVE" });
+      if (!sub) {
+        sub = await Subscription.findOne({ userId: user._id }).sort({ expiryDate: -1 });
+      }
+
+      let newExpiry;
+      if (expiryDate) {
+        newExpiry = new Date(expiryDate);
+      } else if (durationDays) {
+        newExpiry = new Date(Date.now() + parseInt(durationDays) * 24 * 60 * 60 * 1000);
+      }
+
+      if (sub && newExpiry) {
+        sub.expiryDate = newExpiry;
+        sub.status = newExpiry > new Date() ? "ACTIVE" : "EXPIRED";
+        await sub.save();
+      } else if (newExpiry) {
+        const newSub = await Subscription.create({
+          userId: user._id,
+          plan: "STANDARD",
+          status: newExpiry > new Date() ? "ACTIVE" : "EXPIRED",
+          expiryDate: newExpiry,
+          startDate: new Date()
+        });
+        user.currentSubscriptionId = newSub._id;
+      }
+    }
+
+    await user.save();
+
+    await AuditLog.create({
+      action: "USER_MODIFIED_BY_ADMIN",
+      actorType: "ADMIN",
+      actorId: req.admin._id,
+      targetType: "USER",
+      targetId: user._id,
+      details: {
+        username: user.username,
+        updatedFields: Object.keys(req.body)
+      }
+    });
+
+    const updatedUser = await User.findById(id)
+      .populate("currentSubscriptionId")
+      .populate("activeDeviceIds", "deviceName status platform lastSeenAt installationId");
+
+    res.json({
+      success: true,
+      message: `User ${user.username} updated successfully`,
+      user: updatedUser
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete user account permanently
+ */
+export async function deleteUser(req, res, next) {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    await revokeAllUserSessions(user._id);
+    await Device.deleteMany({ userId: user._id });
+    await Subscription.deleteMany({ userId: user._id });
+    await License.deleteMany({ userId: user._id });
+    await User.findByIdAndDelete(id);
+
+    await AuditLog.create({
+      action: "USER_DELETED_BY_ADMIN",
+      actorType: "ADMIN",
+      actorId: req.admin._id,
+      targetType: "USER",
+      targetId: id,
+      details: { username: user.username }
+    });
+
+    res.json({
+      success: true,
+      message: `User ${user.username} deleted permanently`
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Unpair device from user account to free a slot
+ */
+export async function unpairUserDevice(req, res, next) {
+  try {
+    const { id, deviceId } = req.params;
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    user.activeDeviceIds = user.activeDeviceIds.filter(
+      (dId) => dId.toString() !== deviceId.toString()
+    );
+    await user.save();
+
+    await revokeDeviceSessions(deviceId);
+    await Device.findByIdAndUpdate(deviceId, { status: "REVOKED" });
+
+    await AuditLog.create({
+      action: "DEVICE_UNPAIRED_BY_ADMIN",
+      actorType: "ADMIN",
+      actorId: req.admin._id,
+      targetType: "DEVICE",
+      targetId: deviceId,
+      details: {
+        userId: user._id,
+        username: user.username,
+        remainingSlots: user.maxDevices - user.activeDeviceIds.length
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Device unpaired successfully. 1 device slot freed for ${user.username}.`,
+      activeDeviceIds: user.activeDeviceIds
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Get devices of a specific user
  */
 export async function getUserDevices(req, res, next) {

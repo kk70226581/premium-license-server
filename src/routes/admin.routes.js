@@ -5,6 +5,10 @@ import {
   getDashboardOverview,
   getUsers,
   getUserById,
+  createUser,
+  updateUser,
+  deleteUser,
+  unpairUserDevice,
   blockUser,
   unblockUser,
   revokeUserSessions,
@@ -31,11 +35,15 @@ router.post("/login", validateBody(adminLoginSchema), adminLogin);
 // Protected Admin Operations
 router.get("/overview", requireAdmin, getDashboardOverview);
 router.get("/users", requireAdmin, getUsers);
+router.post("/users", requireAdmin, createUser);
 router.get("/users/:id", requireAdmin, getUserById);
+router.patch("/users/:id", requireAdmin, updateUser);
+router.delete("/users/:id", requireAdmin, deleteUser);
 router.post("/users/:id/block", requireAdmin, blockUser);
 router.post("/users/:id/unblock", requireAdmin, unblockUser);
 router.post("/users/:id/revoke-sessions", requireAdmin, revokeUserSessions);
 router.get("/users/:id/devices", requireAdmin, getUserDevices);
+router.post("/users/:id/devices/:deviceId/unpair", requireAdmin, unpairUserDevice);
 
 router.post("/devices/:id/block", requireAdmin, blockDeviceHandler);
 router.post("/devices/:id/unblock", requireAdmin, unblockDeviceHandler);

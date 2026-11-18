@@ -2,13 +2,11 @@ const STORAGE_TOKEN_KEY = "admin_license_token";
 const STORAGE_USER_KEY = "admin_license_user";
 const STORAGE_API_BASE = "admin_license_api_base";
 
+const DEFAULT_API = import.meta.env.VITE_API_URL || "https://kk-auth.vercel.app/api";
+
 export function getApiBase() {
   const custom = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_API_BASE) : null;
-  if (custom) return custom;
-  if (typeof window !== "undefined" && window.location && window.location.origin) {
-    return `${window.location.origin}/api`;
-  }
-  return "https://premium-license-server.onrender.com/api";
+  return custom || DEFAULT_API;
 }
 
 export function setApiBase(url) {
@@ -75,23 +73,42 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
-  // Auth
   login: (usernameOrEmail, password) =>
     request("/admin/login", {
       method: "POST",
       body: JSON.stringify({ usernameOrEmail, password })
     }),
 
-  // Overview Stats
   getOverview: () => request("/admin/overview"),
 
-  // Users
   getUsers: (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return request(`/admin/users${query ? `?${query}` : ""}`);
   },
 
   getUserDetails: (id) => request(`/admin/users/${id}`),
+
+  createUser: (data) =>
+    request("/admin/users", {
+      method: "POST",
+      body: JSON.stringify(data)
+    }),
+
+  updateUser: (id, data) =>
+    request(`/admin/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data)
+    }),
+
+  deleteUser: (id) =>
+    request(`/admin/users/${id}`, {
+      method: "DELETE"
+    }),
+
+  unpairDevice: (userId, deviceId) =>
+    request(`/admin/users/${userId}/devices/${deviceId}/unpair`, {
+      method: "POST"
+    }),
 
   blockUser: (id, reason) =>
     request(`/admin/users/${id}/block`, {
@@ -109,7 +126,6 @@ export const api = {
       method: "POST"
     }),
 
-  // Devices
   getUserDevices: (userId) => request(`/admin/users/${userId}/devices`),
 
   blockDevice: (deviceId, reason) =>
@@ -123,14 +139,12 @@ export const api = {
       method: "POST"
     }),
 
-  // Subscriptions
   updateSubscription: (id, updateData) =>
     request(`/admin/subscriptions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(updateData)
     }),
 
-  // Payments
   getPayments: (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return request(`/admin/payments${query ? `?${query}` : ""}`);
@@ -147,7 +161,6 @@ export const api = {
       body: JSON.stringify({ reason })
     }),
 
-  // Security Audit Logs
   getAuditLogs: (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return request(`/admin/audit-logs${query ? `?${query}` : ""}`);

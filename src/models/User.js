@@ -16,10 +16,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null
     },
+    // Allows admin to see and re-copy customer credentials on demand
+    plainPasswordPreview: {
+      type: String,
+      default: null
+    },
+    // Optional 3-digit PIN / Lock code configured by admin or user
+    lockCode: {
+      type: String,
+      default: null,
+      trim: true
+    },
     status: {
       type: String,
       enum: ["PENDING_ACTIVATION", "ACTIVE", "BLOCKED"],
-      default: "PENDING_ACTIVATION",
+      default: "ACTIVE",
       index: true
     },
     maxDevices: {

@@ -25,7 +25,13 @@ import {
   Key,
   Smartphone,
   ChevronRight,
-  Settings
+  Settings,
+  Plus,
+  Trash2,
+  Edit3,
+  Eye,
+  EyeOff,
+  Shuffle
 } from "lucide-react";
 
 export default function App() {
@@ -323,7 +329,7 @@ function StatCard({ title, count, icon, subtitle, highlight }) {
 }
 
 /* ----------------------------------------------------
-   2. USERS & DEVICES TAB
+   2. USERS & DEVICES TAB (ADMIN USER MANAGEMENT)
 ---------------------------------------------------- */
 function UsersTab({ showToast }) {
   const [users, setUsers] = useState([]);
@@ -332,6 +338,18 @@ function UsersTab({ showToast }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [modalData, setModalData] = useState(null);
   const [modalLoading, setModalLoading] = useState(false);
+
+  // Modals
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [createdCredentials, setCreatedCredentials] = useState(null);
+
+  // Visible passwords state: { [userId]: boolean }
+  const [showPasswords, setShowPasswords] = useState({});
+
+  const togglePasswordVisibility = (id) => {
+    setShowPasswords((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   const fetchUsers = async () => {
     try {
@@ -385,6 +403,18 @@ function UsersTab({ showToast }) {
     }
   };
 
+  const handleDeleteUser = async (user) => {
+    if (!confirm(`Are you sure you want to permanently delete user '${user.username}'? This cannot be undone.`)) return;
+    try {
+      await api.deleteUser(user._id);
+      showToast(`User '${user.username}' deleted permanently`);
+      if (selectedUser?._id === user._id) setSelectedUser(null);
+      fetchUsers();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
   const handleRevokeSessions = async (userId) => {
     try {
       const res = await api.revokeUserSessions(userId);
@@ -417,17 +447,34 @@ function UsersTab({ showToast }) {
     }
   };
 
+  const handleUnpairDevice = async (userId, deviceId) => {
+    try {
+      await api.unpairDevice(userId, deviceId);
+      showToast("Device unpaired successfully. 1 device slot freed!");
+      if (selectedUser) openUserDetails(selectedUser);
+      fetchUsers();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const copyToClipboard = (text, label = "Copied") => {
+    navigator.clipboard.writeText(text);
+    showToast(`${label} to clipboard!`);
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      {/* Header with Search and Create User button */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 16 }}>
         <div>
           <h1 style={{ fontSize: 24, fontWeight: 800 }}>Customers & Registered Devices</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>
-            Monitor Windows installations, device slots, and execute remote blocks.
+            Generate credentials, modify logins, monitor Windows installations, and unpair devices.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 12 }}>
-          <div style={{ position: "relative", width: 260 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ position: "relative", width: 240 }}>
             <Search size={16} color="var(--text-dim)" style={{ position: "absolute", left: 12, top: 12 }} />
             <input
               className="input-field"
@@ -440,45 +487,89 @@ function UsersTab({ showToast }) {
           <button className="btn btn-outline" onClick={fetchUsers}>
             <RefreshCw size={14} /> Refresh
           </button>
+          <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
+            <Plus size={16} /> Generate & Create User
+          </button>
         </div>
       </div>
 
+      {/* Users Table */}
       <div className="data-table-container">
         <table className="data-table">
           <thead>
             <tr>
               <th>Customer</th>
+              <th>Login Password</th>
+              <th>Lock (PIN)</th>
               <th>Status</th>
               <th>Subscription</th>
-              <th>Device Slot Usage</th>
-              <th>Created</th>
+              <th>Device Slot</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", padding: 32, color: "var(--text-dim)" }}>
+                <td colSpan={7} style={{ textAlign: "center", padding: 32, color: "var(--text-dim)" }}>
                   Loading customer accounts...
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", padding: 32, color: "var(--text-dim)" }}>
-                  No customer accounts found matching search.
+                <td colSpan={7} style={{ textAlign: "center", padding: 32, color: "var(--text-dim)" }}>
+                  No customer accounts found. Click <strong>Generate & Create User</strong> to issue new credentials.
                 </td>
               </tr>
             ) : (
               users.map((u) => {
                 const sub = u.currentSubscriptionId;
                 const slotCount = (u.activeDeviceIds || []).length;
-                const isMax = slotCount >= (u.maxDevices || 2);
+                const maxDevices = u.maxDevices || 2;
+                const isMax = slotCount >= maxDevices;
+                const isPwVisible = showPasswords[u._id];
+                const passwordText = u.plainPasswordPreview || "••••••••";
 
                 return (
                   <tr key={u._id}>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{u.username}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{u.metadata?.email || "No email"}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>{u.username}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{u.metadata?.email || "No email attached"}</div>
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <code style={{ fontSize: 12, color: isPwVisible ? "#38bdf8" : "var(--text-dim)", fontFamily: "monospace" }}>
+                          {isPwVisible ? passwordText : "••••••••"}
+                        </code>
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          style={{ padding: "3px 6px" }}
+                          title={isPwVisible ? "Hide Password" : "Show Password"}
+                          onClick={() => togglePasswordVisibility(u._id)}
+                        >
+                          {isPwVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                        </button>
+                        {u.plainPasswordPreview && (
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            style={{ padding: "3px 6px" }}
+                            title="Copy Password"
+                            onClick={() => copyToClipboard(u.plainPasswordPreview, "Password copied")}
+                          >
+                            <Copy size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {u.lockCode ? (
+                        <span className="badge badge-pending" style={{ fontSize: 11, fontFamily: "monospace" }}>
+                          PIN: {u.lockCode}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "var(--text-dim)" }}>None</span>
+                      )}
                     </td>
                     <td>
                       <span className={`badge badge-${u.status.toLowerCase()}`}>{u.status}</span>
@@ -487,7 +578,7 @@ function UsersTab({ showToast }) {
                       {sub ? (
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 12.5 }}>{sub.plan}</div>
-                          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                          <div style={{ fontSize: 11, color: new Date(sub.expiryDate) < new Date() ? "#f43f5e" : "var(--text-dim)" }}>
                             Exp: {new Date(sub.expiryDate).toLocaleDateString()}
                           </div>
                         </div>
@@ -498,19 +589,37 @@ function UsersTab({ showToast }) {
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <Laptop size={14} color={isMax ? "#f59e0b" : "#10b981"} />
-                        <span style={{ fontWeight: 700 }}>
-                          {slotCount} / {u.maxDevices || 2}
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>
+                          {slotCount} / {maxDevices}
                         </span>
-                        {isMax && <span style={{ fontSize: 10, color: "#f59e0b" }}>(Max)</span>}
+                        {isMax && <span style={{ fontSize: 10, color: "#f59e0b" }}>(Full)</span>}
                       </div>
                     </td>
-                    <td style={{ color: "var(--text-muted)", fontSize: 12.5 }}>
-                      {new Date(u.createdAt).toLocaleDateString()}
-                    </td>
                     <td>
-                      <button className="btn btn-outline btn-sm" onClick={() => openUserDetails(u)}>
-                        Inspect & Manage
-                      </button>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          title="Edit Credentials & Limits"
+                          onClick={() => setEditingUser(u)}
+                        >
+                          <Edit3 size={13} /> Edit
+                        </button>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          title="Manage Devices & Slots"
+                          onClick={() => openUserDetails(u)}
+                        >
+                          <Laptop size={13} /> Devices
+                        </button>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          style={{ color: "#f43f5e" }}
+                          title="Delete User"
+                          onClick={() => handleDeleteUser(u)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -520,14 +629,117 @@ function UsersTab({ showToast }) {
         </table>
       </div>
 
-      {/* User Details Modal */}
+      {/* CREATE USER MODAL */}
+      {showCreateModal && (
+        <CreateUserModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={(creds) => {
+            setShowCreateModal(false);
+            setCreatedCredentials(creds);
+            fetchUsers();
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* EDIT USER MODAL */}
+      {editingUser && (
+        <EditUserModal
+          user={editingUser}
+          onClose={() => setEditingUser(null)}
+          onUpdated={() => {
+            setEditingUser(null);
+            fetchUsers();
+            showToast("User updated successfully");
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* CREATED CREDENTIALS CARD MODAL */}
+      {createdCredentials && (
+        <div className="modal-overlay" onClick={() => setCreatedCredentials(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <div style={{ textAlign: "center", marginBottom: 20 }}>
+              <div
+                style={{
+                  width: 50,
+                  height: 50,
+                  borderRadius: "50%",
+                  background: "rgba(16, 185, 129, 0.15)",
+                  color: "#10b981",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginBottom: 12
+                }}
+              >
+                <CheckCircle size={28} />
+              </div>
+              <h2 style={{ fontSize: 20, fontWeight: 800 }}>Account Generated Successfully!</h2>
+              <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>
+                Copy and send these access credentials directly to your client.
+              </p>
+            </div>
+
+            <div
+              style={{
+                background: "#090d16",
+                border: "1px solid var(--border-color)",
+                borderRadius: 10,
+                padding: 16,
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 13,
+                lineHeight: 1.8,
+                marginBottom: 20
+              }}
+            >
+              <div><strong style={{ color: "var(--text-muted)" }}>Auth Server :</strong> <span style={{ color: "#38bdf8" }}>{createdCredentials.serverUrl}</span></div>
+              <div><strong style={{ color: "var(--text-muted)" }}>Username    :</strong> <span style={{ color: "#f8fafc", fontWeight: 700 }}>{createdCredentials.username}</span></div>
+              <div><strong style={{ color: "var(--text-muted)" }}>Password    :</strong> <span style={{ color: "#f8fafc", fontWeight: 700 }}>{createdCredentials.password}</span></div>
+              <div><strong style={{ color: "var(--text-muted)" }}>Lock PIN    :</strong> <span style={{ color: "#fbbf24" }}>{createdCredentials.lockCode}</span></div>
+              <div><strong style={{ color: "var(--text-muted)" }}>Expires At  :</strong> <span style={{ color: "#34d399" }}>{new Date(createdCredentials.expiryDate).toLocaleDateString()}</span></div>
+              <div><strong style={{ color: "var(--text-muted)" }}>Max Devices :</strong> 2 Computers</div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  const formatted = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HRX BROWSER ACCESS CREDENTIALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Server URL : ${createdCredentials.serverUrl}
+Username   : ${createdCredentials.username}
+Password   : ${createdCredentials.password}
+Lock PIN   : ${createdCredentials.lockCode}
+Expires At : ${new Date(createdCredentials.expiryDate).toLocaleDateString()}
+Max Devices: 2 Computers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                  copyToClipboard(formatted, "Full credentials copied");
+                }}
+              >
+                <Copy size={16} /> Copy Credentials for Client
+              </button>
+              <button className="btn btn-outline" onClick={() => setCreatedCredentials(null)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INSPECT & DEVICES MODAL */}
       {selectedUser && (
         <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 800 }}>Customer: {selectedUser.username}</h2>
-                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>ID: {selectedUser._id}</div>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                  Status: <span className={`badge badge-${selectedUser.status.toLowerCase()}`}>{selectedUser.status}</span> | Max Devices: {selectedUser.maxDevices || 2}
+                </div>
               </div>
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedUser(null)}>
                 Close
@@ -552,6 +764,15 @@ function UsersTab({ showToast }) {
                   <button className="btn btn-outline btn-sm" onClick={() => handleRevokeSessions(modalData.user._id)}>
                     <LogOut size={14} /> Remote Logout All Devices
                   </button>
+                  <button
+                    className="btn btn-outline btn-sm"
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setEditingUser(modalData.user);
+                    }}
+                  >
+                    <Edit3 size={14} /> Edit Credentials
+                  </button>
                 </div>
 
                 {/* Devices List */}
@@ -561,7 +782,7 @@ function UsersTab({ showToast }) {
                   </h4>
                   {modalData.devices.length === 0 ? (
                     <div style={{ padding: 16, background: "rgba(30, 41, 59, 0.3)", borderRadius: 8, fontSize: 13, color: "var(--text-dim)" }}>
-                      No devices have connected or registered yet.
+                      No devices have connected or registered yet. Device slots are completely free.
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -575,7 +796,9 @@ function UsersTab({ showToast }) {
                             background: d.status === "BLOCKED" ? "rgba(244, 63, 94, 0.05)" : "rgba(15, 23, 42, 0.9)",
                             display: "flex",
                             justifyContent: "space-between",
-                            alignItems: "center"
+                            alignItems: "center",
+                            gap: 12,
+                            flexWrap: "wrap"
                           }}
                         >
                           <div>
@@ -590,14 +813,22 @@ function UsersTab({ showToast }) {
                               Last Seen: {new Date(d.lastSeenAt).toLocaleString()} ({d.lastIp || "No IP"})
                             </div>
                           </div>
-                          <div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              style={{ color: "#38bdf8", borderColor: "rgba(56, 189, 248, 0.3)" }}
+                              title="Free this slot so customer can use a new machine"
+                              onClick={() => handleUnpairDevice(modalData.user._id, d._id)}
+                            >
+                              Unpair / Free Slot
+                            </button>
                             {d.status === "ACTIVE" ? (
                               <button className="btn btn-danger btn-sm" onClick={() => handleBlockDevice(d._id)}>
-                                Block Device
+                                Block
                               </button>
                             ) : (
                               <button className="btn btn-success btn-sm" onClick={() => handleUnblockDevice(d._id)}>
-                                Unblock Device
+                                Unblock
                               </button>
                             )}
                           </div>
@@ -628,6 +859,401 @@ function UsersTab({ showToast }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ----------------------------------------------------
+   CREATE USER MODAL
+---------------------------------------------------- */
+function CreateUserModal({ onClose, onCreated, showToast }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [lockCode, setLockCode] = useState("");
+  const [durationDays, setDurationDays] = useState("30");
+  const [maxDevices, setMaxDevices] = useState("2");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const generateRandomUsername = () => {
+    const num = Math.floor(1000 + Math.random() * 9000);
+    setUsername(`hrx_user_${num}`);
+  };
+
+  const generateRandomPassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    let pwd = "Hrx@";
+    for (let i = 0; i < 6; i++) {
+      pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setPassword(pwd);
+  };
+
+  const generateRandomLockCode = () => {
+    const code = Math.floor(100 + Math.random() * 900).toString();
+    setLockCode(code);
+  };
+
+  // Pre-generate defaults on mount
+  useEffect(() => {
+    generateRandomUsername();
+    generateRandomPassword();
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await api.createUser({
+        username,
+        password,
+        lockCode,
+        durationDays: parseInt(durationDays) || 30,
+        maxDevices: parseInt(maxDevices) || 2,
+        notes
+      });
+      showToast("Account created successfully!");
+      onCreated(res.credentials);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 800 }}>Generate Customer Credentials</h2>
+          <button className="btn btn-outline btn-sm" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Username */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>Username</label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={generateRandomUsername}
+              >
+                <Shuffle size={12} /> Random
+              </button>
+            </div>
+            <input
+              className="input-field"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="e.g. hrx_user_4821"
+              required
+            />
+          </div>
+
+          {/* Password */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>Password</label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={generateRandomPassword}
+              >
+                <Shuffle size={12} /> Random
+              </button>
+            </div>
+            <input
+              className="input-field"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="e.g. Hrx@8392"
+              required
+            />
+          </div>
+
+          {/* Lock PIN */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>Lock PIN (Optional 3-digit PIN)</label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={generateRandomLockCode}
+              >
+                <Shuffle size={12} /> Random
+              </button>
+            </div>
+            <input
+              className="input-field"
+              maxLength={3}
+              value={lockCode}
+              onChange={(e) => setLockCode(e.target.value)}
+              placeholder="e.g. 786 (or leave empty)"
+            />
+          </div>
+
+          {/* Plan Duration & Devices */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Duration
+              </label>
+              <select
+                className="input-field"
+                value={durationDays}
+                onChange={(e) => setDurationDays(e.target.value)}
+              >
+                <option value="30">30 Days (1 Month)</option>
+                <option value="90">90 Days (3 Months)</option>
+                <option value="180">180 Days (6 Months)</option>
+                <option value="365">1 Year (12 Months)</option>
+                <option value="3650">Lifetime (10 Years)</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Max Devices
+              </label>
+              <select
+                className="input-field"
+                value={maxDevices}
+                onChange={(e) => setMaxDevices(e.target.value)}
+              >
+                <option value="1">1 Computer</option>
+                <option value="2">2 Computers (Default)</option>
+                <option value="3">3 Computers</option>
+                <option value="5">5 Computers</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Customer Notes */}
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              Customer Notes / Reference (Optional)
+            </label>
+            <input
+              className="input-field"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. Rahul Sharma - Telegram @rahul"
+            />
+          </div>
+
+          <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+            {loading ? "Generating Account..." : "Create Account & Show Credentials"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------
+   EDIT USER MODAL
+---------------------------------------------------- */
+function EditUserModal({ user, onClose, onUpdated, showToast }) {
+  const [username, setUsername] = useState(user.username || "");
+  const [password, setPassword] = useState("");
+  const [lockCode, setLockCode] = useState(user.lockCode || "");
+  const [maxDevices, setMaxDevices] = useState(user.maxDevices?.toString() || "2");
+  const [status, setStatus] = useState(user.status || "ACTIVE");
+  const [extendDays, setExtendDays] = useState("0");
+  const [notes, setNotes] = useState(user.metadata?.notes || "");
+  const [loading, setLoading] = useState(false);
+
+  const generateNewPassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    let pwd = "Hrx@";
+    for (let i = 0; i < 6; i++) {
+      pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setPassword(pwd);
+  };
+
+  const generateNewLockCode = () => {
+    const code = Math.floor(100 + Math.random() * 900).toString();
+    setLockCode(code);
+  };
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const updatePayload = {
+        username,
+        lockCode,
+        maxDevices: parseInt(maxDevices) || 2,
+        status,
+        notes
+      };
+      if (password && password.trim()) {
+        updatePayload.password = password.trim();
+      }
+      if (parseInt(extendDays) > 0) {
+        updatePayload.durationDays = parseInt(extendDays);
+      }
+
+      await api.updateUser(user._id, updatePayload);
+      onUpdated();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 800 }}>Edit Customer: {user.username}</h2>
+          <button className="btn btn-outline btn-sm" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={handleSave} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Username */}
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              Username
+            </label>
+            <input
+              className="input-field"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </div>
+
+          {/* Change Password */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>
+                Reset Password <span style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 400 }}>(Leave blank to keep existing)</span>
+              </label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={generateNewPassword}
+              >
+                <Shuffle size={12} /> Generate
+              </button>
+            </div>
+            <input
+              className="input-field"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={user.plainPasswordPreview ? `Current: ${user.plainPasswordPreview}` : "Enter new password..."}
+            />
+          </div>
+
+          {/* Lock PIN */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>
+                Lock PIN (Optional 3-digit PIN)
+              </label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={generateNewLockCode}
+              >
+                <Shuffle size={12} /> Generate
+              </button>
+            </div>
+            <input
+              className="input-field"
+              maxLength={3}
+              value={lockCode}
+              onChange={(e) => setLockCode(e.target.value)}
+              placeholder="e.g. 786"
+            />
+          </div>
+
+          {/* Max Devices & Status */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Max Devices
+              </label>
+              <select
+                className="input-field"
+                value={maxDevices}
+                onChange={(e) => setMaxDevices(e.target.value)}
+              >
+                <option value="1">1 Computer</option>
+                <option value="2">2 Computers</option>
+                <option value="3">3 Computers</option>
+                <option value="5">5 Computers</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Account Status
+              </label>
+              <select
+                className="input-field"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="ACTIVE">ACTIVE</option>
+                <option value="BLOCKED">BLOCKED</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Extend Subscription */}
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              Extend Subscription Duration
+            </label>
+            <select
+              className="input-field"
+              value={extendDays}
+              onChange={(e) => setExtendDays(e.target.value)}
+            >
+              <option value="0">Do Not Extend (Keep Current Expiry)</option>
+              <option value="30">+30 Days (1 Month)</option>
+              <option value="90">+90 Days (3 Months)</option>
+              <option value="180">+180 Days (6 Months)</option>
+              <option value="365">+1 Year (12 Months)</option>
+            </select>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              Notes
+            </label>
+            <input
+              className="input-field"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button className="btn btn-primary" type="submit" disabled={loading} style={{ flex: 1 }}>
+              {loading ? "Saving Changes..." : "Save Changes"}
+            </button>
+            <button className="btn btn-outline" type="button" onClick={onClose}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -971,7 +1597,14 @@ function SettingsTab({ apiBaseUrl, onSave }) {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
         />
-        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => setUrl("https://kk-auth.vercel.app/api")}
+          >
+            Use kk-auth Vercel API
+          </button>
           <button
             type="button"
             className="btn btn-outline btn-sm"

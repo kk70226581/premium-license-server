@@ -6,6 +6,9 @@ import {
   refresh,
   logout,
   getMe,
+  authenticateHandler,
+  sessionHeartbeatHandler,
+  sessionLogoutHandler,
   challengeSchema,
   activateSchema,
   loginSchema,
@@ -24,6 +27,11 @@ router.post("/activate", validateBody(activateSchema), activateAccount);
 
 // Customer login from Qt desktop app
 router.post("/login", validateBody(loginSchema), login);
+
+// HRX Browser / Qt6 client session endpoints
+router.post("/authenticate", authenticateHandler);
+router.post("/session/heartbeat", sessionHeartbeatHandler);
+router.post("/session/logout", sessionLogoutHandler);
 
 // Refresh access token
 router.post("/refresh", validateBody(refreshSchema), refresh);

@@ -19,6 +19,11 @@ import deviceRoutes from "./routes/device.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import { errorHandler } from "./middleware/error.middleware.js";
+import {
+  authenticateHandler,
+  sessionHeartbeatHandler,
+  sessionLogoutHandler
+} from "./controllers/auth.controller.js";
 
 const app = express();
 
@@ -89,6 +94,14 @@ app.get("/api/health", async (req, res) => {
 });
 
 // Mount Routes
+// HRX Browser / Direct Qt6 Endpoints (Exact binary string matches)
+app.post("/api/authenticate", authenticateHandler);
+app.post("/authenticate", authenticateHandler);
+app.post("/api/auth/session/heartbeat", sessionHeartbeatHandler);
+app.post("/api/session/heartbeat", sessionHeartbeatHandler);
+app.post("/api/auth/session/logout", sessionLogoutHandler);
+app.post("/api/session/logout", sessionLogoutHandler);
+
 app.use("/api/auth", authRoutes);
 app.use("/api/device", deviceRoutes);
 app.use("/api/payments", paymentRoutes);

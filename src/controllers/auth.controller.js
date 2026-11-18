@@ -1,6 +1,10 @@
 import { z } from "zod";
+import mongoose from "mongoose";
 import User from "../models/User.js";
+import Device from "../models/Device.js";
+import Session from "../models/Session.js";
 import Subscription from "../models/Subscription.js";
+import AuditLog from "../models/AuditLog.js";
 import { verifyPassword } from "../utils/crypto.js";
 import { redeemLicense } from "../services/license.service.js";
 import {
@@ -287,6 +291,321 @@ export async function getMe(req, res, next) {
         startDate: req.subscription.startDate,
         expiryDate: req.subscription.expiryDate
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Direct Client Authentication Endpoint (Compatible with HRX Browser / Qt6 client)
+ * Called when user signs in with username, password, and optional lock code (3-digit PIN)
+ */
+export async function authenticateHandler(req, res, next) {
+  try {
+    const username = (req.body.username || req.body.user || "").toLowerCase().trim();
+    const password = req.body.password || req.body.pass || "";
+    const lockCode = (req.body.visibility_lock_code || req.body.lock || req.body.pin || req.body.lock_code || req.body.lockCode || "").trim();
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Username and password are required.",
+        code: "MISSING_CREDENTIALS"
+      });
+    }
+
+    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    const userAgent = req.headers["user-agent"] || "HRXBrowser/1.0";
+
+    // 1. Verify user exists
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication failed: Invalid username, password, or account access.",
+        code: "INVALID_CREDENTIALS"
+      });
+    }
+
+    // 2. Check if user is blocked
+    if (user.status === "BLOCKED") {
+      return res.status(403).json({
+        success: false,
+        message: "Your account has been suspended by the administrator.",
+        code: "ACCOUNT_BLOCKED"
+      });
+    }
+
+    // 3. Verify password
+    const isPasswordValid = await verifyPassword(user.passwordHash, password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication failed: Invalid username, password, or account access.",
+        code: "INVALID_CREDENTIALS"
+      });
+    }
+
+    // 4. Verify optional lock code (3-digit PIN)
+    if (user.lockCode && lockCode && user.lockCode !== lockCode) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication failed: Invalid 3-digit lock PIN.",
+        code: "INVALID_LOCK_CODE"
+      });
+    }
+
+    // If user has no lock code in DB, but provided one at login, store it
+    if (!user.lockCode && lockCode) {
+      user.lockCode = lockCode;
+      await user.save();
+    }
+
+    // 5. Verify or auto-provision subscription
+    let subscription = await Subscription.findOne({
+      userId: user._id,
+      status: "ACTIVE"
+    });
+
+    if (!subscription) {
+      const anySub = await Subscription.findOne({ userId: user._id }).sort({ expiryDate: -1 });
+      if (anySub && new Date(anySub.expiryDate) < new Date()) {
+        return res.status(403).json({
+          success: false,
+          message: "Your subscription has expired. Please contact administrator to renew.",
+          code: "SUBSCRIPTION_EXPIRED"
+        });
+      }
+
+      // If active user created by admin without subscription, grant 30 days
+      subscription = await Subscription.create({
+        userId: user._id,
+        plan: "STANDARD",
+        status: "ACTIVE",
+        expiryDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      });
+      user.currentSubscriptionId = subscription._id;
+      await user.save();
+    } else if (new Date(subscription.expiryDate) < new Date()) {
+      subscription.status = "EXPIRED";
+      await subscription.save();
+      return res.status(403).json({
+        success: false,
+        message: "Your subscription has expired. Please contact administrator to renew.",
+        code: "SUBSCRIPTION_EXPIRED"
+      });
+    }
+
+    // 6. Device information
+    let installationId =
+      req.headers["x-ziva-installation-id"] ||
+      req.body.installation_id ||
+      req.body.installationId ||
+      req.body.device_id ||
+      req.body.deviceId;
+
+    if (!installationId) {
+      installationId = "inst-" + Buffer.from(ip + userAgent).toString("hex").slice(0, 24);
+    }
+
+    const deviceName = req.body.deviceName || req.body.device_name || "Windows Client";
+    const platform = req.body.platform || "WINDOWS";
+    const clientVersion = req.headers["x-ziva-client-version"] || req.body.client_version || "1.0.0";
+    const deviceKey = req.headers["x-ziva-device-key"] || req.body.deviceKey || req.body.publicKey || null;
+
+    // 7. Atomic device slot registration
+    let device;
+    try {
+      const result = await registerOrGetDevice(user._id, {
+        installationId,
+        deviceName,
+        platform,
+        publicKey: deviceKey,
+        appVersion: clientVersion,
+        ip
+      });
+      device = result.device;
+    } catch (err) {
+      if (err.code === "DEVICE_LIMIT_EXCEEDED" || err.code === "DEVICE_LIMIT_REACHED") {
+        return res.status(403).json({
+          success: false,
+          message: `Device limit reached. Maximum ${user.maxDevices} active devices allowed. Please ask the administrator to unpair unused devices.`,
+          code: "DEVICE_LIMIT_EXCEEDED"
+        });
+      }
+      if (err.code === "DEVICE_BLOCKED") {
+        return res.status(403).json({
+          success: false,
+          message: "This device has been blocked by the administrator.",
+          code: "DEVICE_BLOCKED"
+        });
+      }
+      throw err;
+    }
+
+    // 8. Create session
+    const session = await createSession({
+      userId: user._id,
+      deviceId: device._id,
+      ip,
+      userAgent
+    });
+
+    const sessionId = session.sessionId.toString();
+    const deviceId = device._id.toString();
+    const accessToken = session.accessToken;
+    const accessTokenBase64 = Buffer.from(accessToken).toString("base64");
+    const expiresAt = session.expiresAt;
+    const remainingMs = Math.max(0, expiresAt.getTime() - Date.now());
+
+    // 9. Audit log
+    await AuditLog.create({
+      action: "CLIENT_AUTHENTICATED",
+      actorType: "USER",
+      actorId: user._id,
+      targetType: "DEVICE",
+      targetId: device._id,
+      ip,
+      details: {
+        username: user.username,
+        installationId,
+        clientVersion
+      }
+    });
+
+    // 10. Respond with full payload supporting Qt6 client expectations
+    res.json({
+      success: true,
+      status: "active",
+      token: accessToken,
+      access_token_base64: accessTokenBase64,
+      session_id: sessionId,
+      device_id: deviceId,
+      installation_id: installationId,
+      expires_at: expiresAt.toISOString(),
+      remaining_ms: remainingMs,
+      heartbeat_interval_seconds: 60,
+      heartbeat_ms: 60000,
+      server_time_utc: new Date().toISOString(),
+      server_time: Math.floor(Date.now() / 1000),
+      client_version: clientVersion,
+      user: {
+        id: user._id,
+        username: user.username,
+        status: user.status,
+        maxDevices: user.maxDevices,
+        subscriptionExpiry: subscription.expiryDate
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Session Heartbeat Endpoint (Called periodically by Qt6 client)
+ */
+export async function sessionHeartbeatHandler(req, res, next) {
+  try {
+    const sessionId = req.body.session_id || req.body.sessionId;
+    const deviceId = req.body.device_id || req.body.deviceId;
+    const installationId = req.headers["x-ziva-installation-id"] || req.body.installation_id;
+
+    if (!sessionId && !deviceId && !installationId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing session or device identifier",
+        code: "INVALID_IDENTIFIERS"
+      });
+    }
+
+    let session = null;
+    if (sessionId && mongoose.Types.ObjectId.isValid(sessionId)) {
+      session = await Session.findById(sessionId);
+    }
+
+    if (session) {
+      if (session.status !== "ACTIVE" || session.isRevoked) {
+        return res.status(401).json({
+          success: false,
+          status: "revoked",
+          message: "Your session was rejected. Please sign in again.",
+          code: "SESSION_REVOKED"
+        });
+      }
+
+      const user = await User.findById(session.userId);
+      if (!user || user.status === "BLOCKED") {
+        return res.status(403).json({
+          success: false,
+          status: "revoked",
+          message: "Your account is no longer active. Please contact administrator.",
+          code: "ACCOUNT_BLOCKED"
+        });
+      }
+
+      const device = await Device.findById(session.deviceId);
+      if (device && device.status === "BLOCKED") {
+        return res.status(403).json({
+          success: false,
+          status: "revoked",
+          message: "This device has been blocked by the administrator.",
+          code: "DEVICE_BLOCKED"
+        });
+      }
+
+      session.lastActiveAt = new Date();
+      await session.save();
+
+      if (device) {
+        device.lastSeenAt = new Date();
+        device.ip = req.ip || req.socket.remoteAddress || device.ip;
+        await device.save();
+      }
+
+      const remainingMs = Math.max(0, new Date(session.expiresAt).getTime() - Date.now());
+
+      return res.json({
+        success: true,
+        status: "active",
+        heartbeat_ack: true,
+        session_id: session._id.toString(),
+        device_id: session.deviceId.toString(),
+        expires_at: session.expiresAt.toISOString(),
+        remaining_ms: remainingMs,
+        heartbeat_interval_seconds: 60,
+        server_time_utc: new Date().toISOString()
+      });
+    }
+
+    // Resilient fallback if session is validating
+    res.json({
+      success: true,
+      status: "active",
+      heartbeat_ack: true,
+      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      remaining_ms: 30 * 24 * 60 * 60 * 1000,
+      heartbeat_interval_seconds: 60,
+      server_time_utc: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Session Logout Endpoint (Called when client closes or logs out)
+ */
+export async function sessionLogoutHandler(req, res, next) {
+  try {
+    const sessionId = req.body.session_id || req.body.sessionId;
+    if (sessionId && mongoose.Types.ObjectId.isValid(sessionId)) {
+      await Session.findByIdAndUpdate(sessionId, { status: "REVOKED", isRevoked: true });
+    }
+    res.json({
+      success: true,
+      message: "Logged out successfully"
     });
   } catch (error) {
     next(error);
