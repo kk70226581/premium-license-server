@@ -424,6 +424,21 @@ export async function authenticateHandler(req, res, next) {
       installationId = "inst-" + Buffer.from(ip + userAgent).toString("hex").slice(0, 24);
     }
 
+    // The Windows client derives its installation id from the public IP prefix
+    // (e.g. "inst-" + hex("223.184.165.")). ISP/mobile IPs change the 3rd octet
+    // between sessions, which otherwise creates a brand-new device every login
+    // and exhausts the device limit. Normalize such IP-derived ids to the /16
+    // prefix so the same machine/customer network always reuses ONE device slot.
+    if (typeof installationId === "string" && installationId.indexOf("inst-") === 0) {
+      try {
+        const raw = Buffer.from(installationId.slice(5), "hex").toString("utf8");
+        const m = raw.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\./);
+        if (m) {
+          installationId = "inst-" + Buffer.from(m[1] + "." + m[2] + ".0.0").toString("hex");
+        }
+      } catch (_) { /* keep original id if decode fails */ }
+    }
+
     const deviceName = req.body.deviceName || req.body.device_name || "Windows Client";
     const platform = req.body.platform || "WINDOWS";
     const deviceKey = req.headers["x-ziva-device-key"] || req.body.deviceKey || req.body.publicKey || null;
