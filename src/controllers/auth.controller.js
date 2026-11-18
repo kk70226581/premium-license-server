@@ -303,8 +303,6 @@ export async function getMe(req, res, next) {
  */
 export async function authenticateHandler(req, res, next) {
   try {
-    // DEBUG: log the exact request the Qt client sends
-    console.log("[AUTH-DEBUG] body=", JSON.stringify(req.body), "headers=", JSON.stringify(req.headers));
     const rawUsername = (req.body.username || req.body.user || "").trim();
     const username = rawUsername.toLowerCase();
     const password = req.body.password || req.body.pass || "";
