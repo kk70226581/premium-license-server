@@ -19,9 +19,12 @@ import {
 } from "../services/session.service.js";
 
 // Validation Schemas
-export const challengeSchema = z.object({
-  installationId: z.string().min(1, "Installation ID is required")
-});
+export const challengeSchema = z
+  .object({
+    installationId: z.string().min(1).optional(),
+    installation_id: z.string().min(1).optional()
+  })
+  .passthrough();
 
 export const activateSchema = z.object({
   username: z.string().min(3).max(50),
@@ -29,17 +32,28 @@ export const activateSchema = z.object({
   password: z.string().min(6, "Password must be at least 6 characters")
 });
 
-export const loginSchema = z.object({
-  username: z.string().min(1, "Username is required"),
-  password: z.string().min(1, "Password is required"),
-  installationId: z.string().min(1, "Installation UUID is required"),
-  deviceName: z.string().min(1, "Device name is required").optional().default("Windows Client"),
-  platform: z.string().default("WINDOWS"),
-  publicKey: z.string().min(1).optional().default(""),
-  nonce: z.string().optional(),
-  signature: z.string().optional(),
-  appVersion: z.string().optional()
-});
+export const loginSchema = z
+  .object({
+    username: z.string().min(1, "Username is required"),
+    password: z.string().min(1, "Password is required"),
+    // The Qt6 client uses snake_case; web/API callers use camelCase.
+    installationId: z.string().min(1).optional(),
+    installation_id: z.string().min(1).optional(),
+    deviceName: z.string().min(1).optional(),
+    device_name: z.string().min(1).optional(),
+    platform: z.string().optional().default("WINDOWS"),
+    publicKey: z.string().optional().default(""),
+    nonce: z.string().optional(),
+    request_nonce: z.string().optional(),
+    requestNonce: z.string().optional(),
+    signature: z.string().optional(),
+    appVersion: z.string().optional(),
+    client_version: z.string().optional(),
+    protocol_version: z.number().optional(),
+    device_info: z.any().optional(),
+    public_ip: z.string().optional()
+  })
+  .passthrough();
 
 export const refreshSchema = z.object({
   refreshToken: z.string().min(1, "Refresh token is required")
@@ -50,7 +64,11 @@ export const refreshSchema = z.object({
  */
 export async function getChallenge(req, res, next) {
   try {
-    const { installationId } = req.body;
+    const installationId =
+      req.body.installationId ||
+      req.body.installation_id ||
+      req.headers["x-ziva-installation-id"] ||
+      "unknown-device";
     const challenge = await createDeviceChallenge(installationId);
     res.set("x-ziva-protocol-version", "2");
     res.json({
