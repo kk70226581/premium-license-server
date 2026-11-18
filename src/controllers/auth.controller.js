@@ -475,15 +475,20 @@ export async function authenticateHandler(req, res, next) {
     });
 
     // 10. Respond with full payload supporting Qt6 client expectations
+    // The Qt6 "protocol-v2" parser requires these exact keys:
+    //   session_id, device_id, status, access_token, expires_in,
+    //   heartbeat_interval_seconds, expires_at, server_time (and Date header).
     res.json({
       success: true,
       status: "active",
       token: accessToken,
+      access_token: accessToken,
       access_token_base64: accessTokenBase64,
       session_id: sessionId,
       device_id: deviceId,
       installation_id: installationId,
       expires_at: expiresAt.toISOString(),
+      expires_in: Math.max(0, Math.floor(remainingMs / 1000)),
       remaining_ms: remainingMs,
       heartbeat_interval_seconds: 60,
       heartbeat_ms: 60000,
