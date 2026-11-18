@@ -11,6 +11,7 @@ import { generateAccessToken } from "../utils/token.js";
 import { approvePayment, rejectPayment } from "../services/payment.service.js";
 import { blockDevice, unblockDevice } from "../services/device.service.js";
 import { revokeAllUserSessions, revokeDeviceSessions } from "../services/session.service.js";
+import { lookupIpLocation, formatLocation } from "../utils/geoip.js";
 
 // Validation Schemas
 export const adminLoginSchema = z.object({
@@ -225,11 +226,37 @@ export async function getUserById(req, res, next) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    const [devices, subscriptions, licenses] = await Promise.all([
-      Device.find({ userId: user._id }).sort({ createdAt: -1 }),
+    const [rawDevices, subscriptions, licenses] = await Promise.all([
+      Device.find({ userId: user._id }).sort({ lastSeenAt: -1 }),
       Subscription.find({ userId: user._id }).sort({ createdAt: -1 }),
       License.find({ userId: user._id }).select("-keyHash").sort({ createdAt: -1 })
     ]);
+
+    const devices = await Promise.all(
+      rawDevices.map(async (d) => {
+        let loc = d.location;
+        if ((!loc || !loc.city) && d.lastIp) {
+          loc = await lookupIpLocation(d.lastIp);
+          if (loc && loc.city) {
+            d.location = loc;
+            d.save().catch(() => {});
+          }
+        }
+        const diffMs = Date.now() - new Date(d.lastSeenAt).getTime();
+        const isOnline = diffMs < 3 * 60 * 1000 && d.status === "ACTIVE";
+        const isSlotInUse = user.activeDeviceIds.some(
+          (id) => id.toString() === d._id.toString()
+        );
+
+        return {
+          ...d.toObject(),
+          isOnline,
+          isSlotInUse,
+          location: loc || { city: "", region: "", country: "", isp: "" },
+          locationFormatted: formatLocation(loc)
+        };
+      })
+    );
 
     res.json({
       success: true,
@@ -637,7 +664,9 @@ export async function unpairUserDevice(req, res, next) {
     await user.save();
 
     await revokeDeviceSessions(deviceId);
-    await Device.findByIdAndUpdate(deviceId, { status: "REVOKED" });
+    await Device.findByIdAndUpdate(deviceId, { status: "UNPAIRED" });
+
+    const remainingSlots = Math.max(0, user.maxDevices - user.activeDeviceIds.length);
 
     await AuditLog.create({
       action: "DEVICE_UNPAIRED_BY_ADMIN",
@@ -648,13 +677,13 @@ export async function unpairUserDevice(req, res, next) {
       details: {
         userId: user._id,
         username: user.username,
-        remainingSlots: user.maxDevices - user.activeDeviceIds.length
+        remainingSlots
       }
     });
 
     res.json({
       success: true,
-      message: `Device unpaired successfully. 1 device slot freed for ${user.username}.`,
+      message: `Device slot freed for ${user.username}. (${remainingSlots}/${user.maxDevices} slots now available for this user)`,
       activeDeviceIds: user.activeDeviceIds
     });
   } catch (error) {
@@ -663,12 +692,121 @@ export async function unpairUserDevice(req, res, next) {
 }
 
 /**
- * Get devices of a specific user
+ * Free all device slots for a user (Reset slots so customer can log in anywhere)
+ */
+export async function unpairAllUserDevices(req, res, next) {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const devices = await Device.find({ userId: id });
+    for (const d of devices) {
+      await revokeDeviceSessions(d._id);
+    }
+
+    // Mark non-blocked devices as UNPAIRED
+    await Device.updateMany(
+      { userId: id, status: { $ne: "BLOCKED" } },
+      { $set: { status: "UNPAIRED" } }
+    );
+
+    user.activeDeviceIds = [];
+    await user.save();
+
+    await AuditLog.create({
+      action: "ALL_DEVICES_UNPAIRED_BY_ADMIN",
+      actorType: "ADMIN",
+      actorId: req.admin._id,
+      targetType: "USER",
+      targetId: user._id,
+      details: {
+        userId: user._id,
+        username: user.username,
+        slotsFreed: user.maxDevices
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `All device slots reset! Customer ${user.username} can now log in from anywhere within their ${user.maxDevices}-device quota.`,
+      activeDeviceIds: []
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Delete a specific device permanently (Cleans up old/ghost test records)
+ */
+export async function deleteUserDevice(req, res, next) {
+  try {
+    const { id, deviceId } = req.params;
+    const user = await User.findById(id);
+    if (user) {
+      user.activeDeviceIds = user.activeDeviceIds.filter(
+        (dId) => dId.toString() !== deviceId.toString()
+      );
+      await user.save();
+    }
+
+    await revokeDeviceSessions(deviceId);
+    await Device.findByIdAndDelete(deviceId);
+
+    res.json({
+      success: true,
+      message: "Device removed permanently from customer history."
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Get devices of a specific user with enriched location and online status
  */
 export async function getUserDevices(req, res, next) {
   try {
-    const devices = await Device.find({ userId: req.params.id }).sort({ createdAt: -1 });
-    res.json({ success: true, devices });
+    const user = await User.findById(req.params.id);
+    const devices = await Device.find({ userId: req.params.id }).sort({ lastSeenAt: -1 });
+
+    const enriched = await Promise.all(
+      devices.map(async (d) => {
+        let loc = d.location;
+        if ((!loc || !loc.city) && d.lastIp) {
+          loc = await lookupIpLocation(d.lastIp);
+          if (loc && loc.city) {
+            d.location = loc;
+            d.save().catch(() => {});
+          }
+        }
+        const diffMs = Date.now() - new Date(d.lastSeenAt).getTime();
+        // Online if heartbeat / request received within last 3 minutes
+        const isOnline = diffMs < 3 * 60 * 1000 && d.status === "ACTIVE";
+
+        const isSlotInUse = user
+          ? user.activeDeviceIds.some((id) => id.toString() === d._id.toString())
+          : false;
+
+        return {
+          ...d.toObject(),
+          isOnline,
+          isSlotInUse,
+          location: loc || { city: "", region: "", country: "", isp: "" },
+          locationFormatted: formatLocation(loc)
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      maxDevices: user ? user.maxDevices : 2,
+      activeSlotsCount: user ? user.activeDeviceIds.length : 0,
+      devices: enriched
+    });
   } catch (error) {
     next(error);
   }

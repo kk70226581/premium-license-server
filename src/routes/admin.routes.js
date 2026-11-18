@@ -9,6 +9,8 @@ import {
   updateUser,
   deleteUser,
   unpairUserDevice,
+  unpairAllUserDevices,
+  deleteUserDevice,
   blockUser,
   unblockUser,
   revokeUserSessions,
@@ -43,7 +45,9 @@ router.post("/users/:id/block", requireAdmin, blockUser);
 router.post("/users/:id/unblock", requireAdmin, unblockUser);
 router.post("/users/:id/revoke-sessions", requireAdmin, revokeUserSessions);
 router.get("/users/:id/devices", requireAdmin, getUserDevices);
+router.post("/users/:id/devices/unpair-all", requireAdmin, unpairAllUserDevices);
 router.post("/users/:id/devices/:deviceId/unpair", requireAdmin, unpairUserDevice);
+router.delete("/users/:id/devices/:deviceId", requireAdmin, deleteUserDevice);
 
 router.post("/devices/:id/block", requireAdmin, blockDeviceHandler);
 router.post("/devices/:id/unblock", requireAdmin, unblockDeviceHandler);

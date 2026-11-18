@@ -29,7 +29,7 @@ const deviceSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["ACTIVE", "BLOCKED", "REVOKED"],
+      enum: ["ACTIVE", "BLOCKED", "REVOKED", "UNPAIRED"],
       default: "ACTIVE",
       index: true
     },
@@ -40,6 +40,12 @@ const deviceSchema = new mongoose.Schema(
     lastIp: {
       type: String,
       default: null
+    },
+    location: {
+      city: { type: String, default: "" },
+      region: { type: String, default: "" },
+      country: { type: String, default: "" },
+      isp: { type: String, default: "" }
     },
     appVersion: {
       type: String,

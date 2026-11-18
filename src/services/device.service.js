@@ -5,6 +5,7 @@ import Challenge from "../models/Challenge.js";
 import AuditLog from "../models/AuditLog.js";
 import { revokeDeviceSessions } from "./session.service.js";
 import { generateRandomToken, verifyDeviceSignature } from "../utils/crypto.js";
+import { lookupIpLocation } from "../utils/geoip.js";
 
 /**
  * Create a fresh cryptographic authentication challenge for a Windows installation
@@ -45,17 +46,52 @@ export async function verifyChallengeResponse(installationId, nonce, signatureBa
 }
 
 /**
- * Atomic 2-Device Slot Allocation & Registration
+ * Atomic Device Slot Allocation & Registration
  * Supports MongoDB Atlas replica set transactions with standalone fallback
  */
 export async function registerOrGetDevice(userId, { installationId, deviceName, platform = "WINDOWS", publicKey, appVersion, ip }) {
   // First check if this installation is already registered for this user
   const existing = await Device.findOne({ userId, installationId });
   if (existing) {
-    if (existing.status !== "ACTIVE") {
-      const err = new Error("Device is blocked on this account. Contact support.");
+    // Only explicitly BLOCKED devices are rejected
+    if (existing.status === "BLOCKED") {
+      const err = new Error("This device has been blocked by the administrator.");
       err.code = "DEVICE_BLOCKED";
       throw err;
+    }
+
+    // Geolocation lookup if missing or IP changed
+    if (ip && (!existing.location || !existing.location.city || existing.lastIp !== ip)) {
+      try {
+        const geo = await lookupIpLocation(ip);
+        if (geo && geo.city) existing.location = geo;
+      } catch {}
+    }
+
+    // If device was previously UNPAIRED or REVOKED, re-activate using available slot
+    const user = await User.findById(userId);
+    const hasSlot = user && user.activeDeviceIds.some((dId) => dId.toString() === existing._id.toString());
+
+    if (!hasSlot || existing.status !== "ACTIVE") {
+      const updatedUser = await User.findOneAndUpdate(
+        {
+          _id: userId,
+          $expr: { $lt: [{ $size: "$activeDeviceIds" }, "$maxDevices"] }
+        },
+        { $addToSet: { activeDeviceIds: existing._id } },
+        { returnDocument: "after" }
+      );
+
+      if (!updatedUser) {
+        const max = user ? user.maxDevices : 2;
+        const currentCount = user && user.activeDeviceIds ? user.activeDeviceIds.length : max;
+        const err = new Error(
+          `Device limit reached (${currentCount}/${max} active devices). Please unpair an unused device in the Admin Dashboard to free a slot.`
+        );
+        err.code = "DEVICE_LIMIT_EXCEEDED";
+        throw err;
+      }
+      existing.status = "ACTIVE";
     }
 
     // Update heartbeat metadata and key if changed
@@ -67,6 +103,14 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
     await existing.save();
 
     return { device: existing, isNew: false };
+  }
+
+  // Lookup IP location for new device
+  let location = { city: "", region: "", country: "", isp: "" };
+  if (ip) {
+    try {
+      location = await lookupIpLocation(ip);
+    } catch {}
   }
 
   // New device registration requires slot allocation
@@ -97,7 +141,7 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
         );
 
         if (!user) {
-          const err = new Error("Account device limit reached (Maximum 2 active devices). Please unregister an existing device.");
+          const err = new Error("Account device limit reached. Maximum active devices in use. Please unpair an existing device.");
           err.code = "DEVICE_LIMIT_REACHED";
           throw err;
         }
@@ -113,6 +157,7 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
               publicKey,
               appVersion: appVersion || "1.0.0",
               lastIp: ip,
+              location,
               status: "ACTIVE",
               lastSeenAt: new Date()
             }
@@ -138,7 +183,7 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
     );
 
     if (!user) {
-      const err = new Error("Account device limit reached (Maximum 2 active devices). Please unregister an existing device.");
+      const err = new Error("Account device limit reached. Maximum active devices in use. Please unpair an existing device.");
       err.code = "DEVICE_LIMIT_REACHED";
       throw err;
     }
@@ -153,6 +198,7 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
         publicKey,
         appVersion: appVersion || "1.0.0",
         lastIp: ip,
+        location,
         status: "ACTIVE",
         lastSeenAt: new Date()
       });
@@ -172,7 +218,7 @@ export async function registerOrGetDevice(userId, { installationId, deviceName, 
     actorId: userId,
     targetType: "DEVICE",
     targetId: deviceId,
-    details: { installationId, deviceName, platform },
+    details: { installationId, deviceName, platform, location },
     ip
   });
 
@@ -221,11 +267,7 @@ export async function unblockDevice(deviceId, adminId = null) {
     throw new Error("Device not found");
   }
 
-  if (device.status === "ACTIVE") {
-    return device;
-  }
-
-  // Check if user has an available device slot
+  // Attempt to allocate slot if available
   const user = await User.findOneAndUpdate(
     {
       _id: device.userId,
@@ -236,13 +278,8 @@ export async function unblockDevice(deviceId, adminId = null) {
     { returnDocument: "after" }
   );
 
-  if (!user) {
-    const err = new Error("Cannot unblock: user already has maximum active devices registered (2). Block another device first.");
-    err.code = "DEVICE_LIMIT_REACHED";
-    throw err;
-  }
-
-  device.status = "ACTIVE";
+  // If slot available, make it ACTIVE, else UNPAIRED (ban lifted, ready when slot opens)
+  device.status = user ? "ACTIVE" : "UNPAIRED";
   await device.save();
 
   await AuditLog.create({
@@ -251,7 +288,7 @@ export async function unblockDevice(deviceId, adminId = null) {
     actorId: adminId,
     targetType: "DEVICE",
     targetId: device._id,
-    details: { userId: device.userId }
+    details: { userId: device.userId, status: device.status }
   });
 
   return device;
