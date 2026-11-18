@@ -52,10 +52,20 @@ export async function getChallenge(req, res, next) {
   try {
     const { installationId } = req.body;
     const challenge = await createDeviceChallenge(installationId);
+    res.set("x-ziva-protocol-version", "2");
     res.json({
+      protocol_version: 2,
       success: true,
+      status: "active",
       nonce: challenge.nonce,
-      expiresAt: challenge.expiresAt
+      client_nonce: challenge.nonce,
+      challenge: challenge.nonce,
+      expiresAt: challenge.expiresAt,
+      expires_at: challenge.expiresAt,
+      expires_in: 300,
+      heartbeat_interval_seconds: 60,
+      server_time: Math.floor(Date.now() / 1000),
+      server_time_utc: new Date().toISOString()
     });
   } catch (error) {
     next(error);
@@ -196,12 +206,35 @@ export async function login(req, res, next) {
       userAgent
     });
 
+    // Return the full protocol-v2 response the Qt6/HRX client requires.
+    // (same shape as /api/authenticate)
+    const accessTokenV2 = session.accessToken;
+    const accessTokenBase64V2 = Buffer.from(accessTokenV2).toString("base64");
+    const expiresAtV2 = new Date(session.expiresAt);
+    const remainingMsV2 = Math.max(0, expiresAtV2.getTime() - Date.now());
+    const sessionIdV2 = session._id ? session._id.toString() : session.sessionId.toString();
+    const deviceIdV2 = device._id.toString();
+    res.set("x-ziva-protocol-version", "2");
     res.json({
+      protocol_version: 2,
       success: true,
+      status: "active",
       message: "Login successful",
-      accessToken: session.accessToken,
+      access_token: accessTokenV2,
+      access_token_base64: accessTokenBase64V2,
+      token: accessTokenV2,
       refreshToken: session.refreshToken,
-      expiresAt: session.expiresAt,
+      session_id: sessionIdV2,
+      device_id: deviceIdV2,
+      installation_id: device.installationId,
+      expires_at: expiresAtV2.toISOString(),
+      expires_in: Math.max(300, Math.min(90000, Math.floor(remainingMsV2 / 1000))),
+      remaining_ms: remainingMsV2,
+      heartbeat_interval_seconds: 60,
+      heartbeat_ms: 60000,
+      server_time: Math.floor(Date.now() / 1000),
+      server_time_utc: new Date().toISOString(),
+      client_version: appVersion || "5.1.1",
       device: {
         id: device._id,
         deviceName: device.deviceName,
@@ -213,6 +246,12 @@ export async function login(req, res, next) {
         plan: subscription.plan,
         status: subscription.status,
         expiryDate: subscription.expiryDate,
+        maxDevices: user.maxDevices
+      },
+      user: {
+        id: user._id,
+        username: user.username,
+        status: user.status,
         maxDevices: user.maxDevices
       }
     });
