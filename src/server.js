@@ -27,6 +27,9 @@ import {
 
 const app = express();
 
+// Trust reverse proxy (Vercel, Render, Cloudflare) for client IP and rate-limiting
+app.set("trust proxy", 1);
+
 // Security hardening
 app.disable("x-powered-by");
 app.use(
@@ -42,7 +45,7 @@ app.use(
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
+    allowedHeaders: ["*"]
   })
 );
 

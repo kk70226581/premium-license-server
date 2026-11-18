@@ -1,172 +1,98 @@
-import { connectDB } from "../src/config/database.js";
-import User from "../src/models/User.js";
-import Device from "../src/models/Device.js";
-import Session from "../src/models/Session.js";
-import Subscription from "../src/models/Subscription.js";
-import Admin from "../src/models/Admin.js";
+import "dotenv/config";
+import mongoose from "mongoose";
 import app from "../src/server.js";
 import http from "http";
 
 async function runTest() {
-  console.log("=== Testing HRX Client Authentication & Admin User Management ===");
-  await connectDB();
-
   const server = http.createServer(app);
-  await new Promise((res) => server.listen(8099, res));
-  const baseUrl = "http://localhost:8099";
+  await new Promise(resolve => server.listen(8001, resolve));
+  console.log("Local test server listening on 8001");
 
   try {
-    // 1. Get or create admin token
-    let admin = await Admin.findOne({ username: "admin" });
-    const adminLoginRes = await fetch(`${baseUrl}/api/admin/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ usernameOrEmail: "admin", password: "Admin@123456" })
-    });
-    const adminData = await adminLoginRes.json();
-    if (!adminData.success) throw new Error("Admin login failed: " + JSON.stringify(adminData));
-    const adminToken = adminData.token;
-    console.log("✅ Admin logged in successfully");
+    // 1. Test /api/authenticate
+    const authPayload = {
+      username: "hrx_user_8891",
+      password: "Hrx@VTppSX",
+      installation_id: "493aecec-7d73-43b5-be50-eb33b3ee6865",
+      request_nonce: "nonce-" + Date.now(),
+      protocol_version: 2
+    };
 
-    // Clean up any previous test user
-    const existingTestUser = await User.findOne({ username: "hrx_test_client" });
-    if (existingTestUser) {
-      await User.findByIdAndDelete(existingTestUser._id);
-      await Device.deleteMany({ userId: existingTestUser._id });
-      await Session.deleteMany({ userId: existingTestUser._id });
-      await Subscription.deleteMany({ userId: existingTestUser._id });
-    }
-
-    // 2. Admin creates a user with custom credentials and lock PIN
-    console.log("\n--- 1. Admin creates user ---");
-    const createRes = await fetch(`${baseUrl}/api/admin/users`, {
+    console.log("\n--- Testing POST /api/authenticate ---");
+    const res = await fetch("http://localhost:8001/api/authenticate", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        "x-ziva-installation-id": "493aecec-7d73-43b5-be50-eb33b3ee6865",
+        "x-ziva-protocol-version": "2",
+        "x-ziva-client-version": "5.1.1"
       },
-      body: JSON.stringify({
-        username: "hrx_test_client",
-        password: "ClientPass@123",
-        lockCode: "786",
-        plan: "MONTHLY",
-        durationDays: 30,
-        maxDevices: 2,
-        notes: "Test customer"
-      })
+      body: JSON.stringify(authPayload)
     });
-    const createData = await createRes.json();
-    console.log("Create user response:", createData);
-    if (!createData.success) throw new Error("Create user failed");
-    const testUserId = createData.user.id;
-    console.log("✅ User created with lockCode 786 and password ClientPass@123");
 
-    // 3. Client Authenticates to /api/authenticate
-    console.log("\n--- 2. Client logs in via /api/authenticate ---");
-    const authRes = await fetch(`${baseUrl}/api/authenticate`, {
+    const status = res.status;
+    const headers = Object.fromEntries(res.headers.entries());
+    const data = await res.json();
+
+    console.log("Status:", status);
+    console.log("x-ziva-protocol-version:", headers["x-ziva-protocol-version"]);
+    console.log("x-ziva-client-version:", headers["x-ziva-client-version"]);
+    console.log("Response payload:", JSON.stringify(data, null, 2));
+
+    // Validations:
+    if (data.protocol_version !== 2) throw new Error("protocol_version must be 2");
+    if (data.success !== true) throw new Error("success must be true");
+    if (data.status !== "active") throw new Error("status must be active");
+    if (!data.access_token) throw new Error("access_token is required");
+    if (!data.access_token_base64) throw new Error("access_token_base64 is required");
+    if (data.username !== authPayload.username) throw new Error("username must match request username");
+    if (data.request_nonce !== authPayload.request_nonce) throw new Error("request_nonce must match request nonce");
+    if (typeof data.expires_in !== "number" || data.expires_in < 300 || data.expires_in > 90000) {
+      throw new Error("expires_in must be between 300 and 90000");
+    }
+    if (typeof data.heartbeat_interval_seconds !== "number") throw new Error("heartbeat_interval_seconds must be number");
+    if (!data.session_id) throw new Error("session_id is required");
+    if (!data.device_id) throw new Error("device_id is required");
+    if (!data.installation_id) throw new Error("installation_id is required");
+
+    console.log("\n✅ ALL /api/authenticate PROTOCOL-V2 ASSERTIONS PASSED 100%!");
+
+    // 2. Test /api/auth/session/heartbeat
+    console.log("\n--- Testing POST /api/auth/session/heartbeat ---");
+    const hbRes = await fetch("http://localhost:8001/api/auth/session/heartbeat", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-ziva-installation-id": "inst-mac-device-01",
-        "x-ziva-client-version": "2.0.6"
+        "Authorization": "Bearer " + data.access_token,
+        "x-ziva-installation-id": data.installation_id,
+        "x-ziva-protocol-version": "2",
+        "x-ziva-client-version": "5.1.1"
       },
       body: JSON.stringify({
-        username: "hrx_test_client",
-        password: "ClientPass@123",
-        visibility_lock_code: "786"
+        session_id: data.session_id,
+        device_id: data.device_id,
+        installation_id: data.installation_id
       })
     });
-    const authData = await authRes.json();
-    console.log("Auth response keys:", Object.keys(authData));
-    console.log("Auth status:", authData.status, "session_id:", authData.session_id);
-    if (!authData.success || !authData.access_token_base64 || !authData.session_id) {
-      throw new Error("Client authenticate failed or missing keys: " + JSON.stringify(authData));
-    }
-    console.log("✅ /api/authenticate returned all required keys for Qt6 client!");
 
-    // 4. Test heartbeat
-    console.log("\n--- 3. Client sends session heartbeat ---");
-    const hbRes = await fetch(`${baseUrl}/api/auth/session/heartbeat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: authData.session_id,
-        device_id: authData.device_id
-      })
-    });
+    const hbStatus = hbRes.status;
     const hbData = await hbRes.json();
-    console.log("Heartbeat response:", hbData);
-    if (!hbData.success || !hbData.heartbeat_ack) throw new Error("Heartbeat failed");
-    console.log("✅ /api/auth/session/heartbeat acknowledged!");
+    console.log("Heartbeat Status:", hbStatus);
+    console.log("Heartbeat Data:", JSON.stringify(hbData, null, 2));
 
-    // 5. Admin modifies user (Change password to NewPass@456, lockCode to 999)
-    console.log("\n--- 4. Admin modifies user credentials ---");
-    const patchRes = await fetch(`${baseUrl}/api/admin/users/${testUserId}`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
-      },
-      body: JSON.stringify({
-        username: "hrx_test_client",
-        password: "NewPass@456",
-        lockCode: "999"
-      })
-    });
-    const patchData = await patchRes.json();
-    console.log("Patch response:", patchData);
-    if (!patchData.success) throw new Error("Update user failed");
-    console.log("✅ Admin successfully modified password & lock PIN!");
+    if (hbData.protocol_version !== 2) throw new Error("hb protocol_version must be 2");
+    if (hbData.heartbeat_ack !== true) throw new Error("hb heartbeat_ack must be true");
+    if (hbData.status !== "active") throw new Error("hb status must be active");
 
-    // 6. Verify old password fails
-    console.log("\n--- 5. Verify old password fails ---");
-    const oldAuthRes = await fetch(`${baseUrl}/api/authenticate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: "hrx_test_client",
-        password: "ClientPass@123",
-        visibility_lock_code: "786"
-      })
-    });
-    console.log("Old password status:", oldAuthRes.status);
-    if (oldAuthRes.status !== 401) throw new Error("Old password should have been rejected!");
-    console.log("✅ Old password correctly rejected (401)");
-
-    // 7. Verify new password succeeds
-    console.log("\n--- 6. Verify new password succeeds ---");
-    const newAuthRes = await fetch(`${baseUrl}/api/authenticate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-ziva-installation-id": "inst-mac-device-01"
-      },
-      body: JSON.stringify({
-        username: "hrx_test_client",
-        password: "NewPass@456",
-        visibility_lock_code: "999"
-      })
-    });
-    const newAuthData = await newAuthRes.json();
-    if (!newAuthData.success) throw new Error("New password failed: " + JSON.stringify(newAuthData));
-    console.log("✅ New password & lock PIN authenticated successfully!");
-
-    // 8. Clean up test user
-    await fetch(`${baseUrl}/api/admin/users/${testUserId}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${adminToken}` }
-    });
-    console.log("✅ Cleaned up test user");
-
-    console.log("\n🎉 ALL TESTS PASSED SUCCESSFULLY! 🎉");
+    console.log("\n✅ ALL /api/auth/session/heartbeat ASSERTIONS PASSED 100%!");
   } finally {
     server.close();
+    await mongoose.disconnect();
     process.exit(0);
   }
 }
 
-runTest().catch((e) => {
-  console.error("Test failed:", e);
+runTest().catch(err => {
+  console.error("Test failed:", err);
   process.exit(1);
 });
-

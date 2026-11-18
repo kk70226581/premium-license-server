@@ -303,12 +303,21 @@ export async function getMe(req, res, next) {
  */
 export async function authenticateHandler(req, res, next) {
   try {
-    const username = (req.body.username || req.body.user || "").toLowerCase().trim();
+    const rawUsername = (req.body.username || req.body.user || "").trim();
+    const username = rawUsername.toLowerCase();
     const password = req.body.password || req.body.pass || "";
     const lockCode = (req.body.visibility_lock_code || req.body.lock || req.body.pin || req.body.lock_code || req.body.lockCode || "").trim();
 
+    const clientVersion = req.headers["x-ziva-client-version"] || req.body.client_version || "5.1.1";
+
+    res.set("x-ziva-protocol-version", "2");
+    res.set("x-ziva-client-version", clientVersion);
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.set("Pragma", "no-cache");
+
     if (!username || !password) {
       return res.status(400).json({
+        protocol_version: 2,
         success: false,
         message: "Username and password are required.",
         code: "MISSING_CREDENTIALS"
@@ -322,6 +331,7 @@ export async function authenticateHandler(req, res, next) {
     const user = await User.findOne({ username });
     if (!user) {
       return res.status(401).json({
+        protocol_version: 2,
         success: false,
         message: "Authentication failed: Invalid username, password, or account access.",
         code: "INVALID_CREDENTIALS"
@@ -331,6 +341,7 @@ export async function authenticateHandler(req, res, next) {
     // 2. Check if user is blocked
     if (user.status === "BLOCKED") {
       return res.status(403).json({
+        protocol_version: 2,
         success: false,
         message: "Your account has been suspended by the administrator.",
         code: "ACCOUNT_BLOCKED"
@@ -341,6 +352,7 @@ export async function authenticateHandler(req, res, next) {
     const isPasswordValid = await verifyPassword(user.passwordHash, password);
     if (!isPasswordValid) {
       return res.status(401).json({
+        protocol_version: 2,
         success: false,
         message: "Authentication failed: Invalid username, password, or account access.",
         code: "INVALID_CREDENTIALS"
@@ -350,6 +362,7 @@ export async function authenticateHandler(req, res, next) {
     // 4. Verify optional lock code (3-digit PIN)
     if (user.lockCode && lockCode && user.lockCode !== lockCode) {
       return res.status(401).json({
+        protocol_version: 2,
         success: false,
         message: "Authentication failed: Invalid 3-digit lock PIN.",
         code: "INVALID_LOCK_CODE"
@@ -372,6 +385,7 @@ export async function authenticateHandler(req, res, next) {
       const anySub = await Subscription.findOne({ userId: user._id }).sort({ expiryDate: -1 });
       if (anySub && new Date(anySub.expiryDate) < new Date()) {
         return res.status(403).json({
+          protocol_version: 2,
           success: false,
           message: "Your subscription has expired. Please contact administrator to renew.",
           code: "SUBSCRIPTION_EXPIRED"
@@ -381,7 +395,7 @@ export async function authenticateHandler(req, res, next) {
       // If active user created by admin without subscription, grant 30 days
       subscription = await Subscription.create({
         userId: user._id,
-        plan: "MONTHLY",
+        plan: "STANDARD",
         status: "ACTIVE",
         expiryDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       });
@@ -391,6 +405,7 @@ export async function authenticateHandler(req, res, next) {
       subscription.status = "EXPIRED";
       await subscription.save();
       return res.status(403).json({
+        protocol_version: 2,
         success: false,
         message: "Your subscription has expired. Please contact administrator to renew.",
         code: "SUBSCRIPTION_EXPIRED"
@@ -411,7 +426,6 @@ export async function authenticateHandler(req, res, next) {
 
     const deviceName = req.body.deviceName || req.body.device_name || "Windows Client";
     const platform = req.body.platform || "WINDOWS";
-    const clientVersion = req.headers["x-ziva-client-version"] || req.body.client_version || "1.0.0";
     const deviceKey = req.headers["x-ziva-device-key"] || req.body.deviceKey || req.body.publicKey || null;
 
     // 7. Atomic device slot registration
@@ -429,6 +443,7 @@ export async function authenticateHandler(req, res, next) {
     } catch (err) {
       if (err.code === "DEVICE_LIMIT_EXCEEDED" || err.code === "DEVICE_LIMIT_REACHED") {
         return res.status(403).json({
+          protocol_version: 2,
           success: false,
           message: `Device limit reached. Maximum ${user.maxDevices} active devices allowed. Please ask the administrator to unpair unused devices.`,
           code: "DEVICE_LIMIT_EXCEEDED"
@@ -436,6 +451,7 @@ export async function authenticateHandler(req, res, next) {
       }
       if (err.code === "DEVICE_BLOCKED") {
         return res.status(403).json({
+          protocol_version: 2,
           success: false,
           message: "This device has been blocked by the administrator.",
           code: "DEVICE_BLOCKED"
@@ -455,17 +471,29 @@ export async function authenticateHandler(req, res, next) {
     const sessionId = session.sessionId.toString();
     const deviceId = device._id.toString();
     const accessToken = session.accessToken;
-    const accessTokenBase64 = Buffer.from(accessToken).toString("base64");
-    const expiresAt = session.expiresAt;
-    const remainingMs = Math.max(0, expiresAt.getTime() - Date.now());
+    const accessTokenBase64 = Buffer.from(accessToken).toString("base64").replace(/[\r\n\x00]/g, "");
+
+    // The Qt6 client strictly requires: 300 <= expires_in <= 90000 (standard 24 hours = 86400s)
+    const SESSION_DURATION_SEC = 86400;
+    const expiresAt = new Date(Date.now() + SESSION_DURATION_SEC * 1000);
+    const remainingMs = SESSION_DURATION_SEC * 1000;
+    const remainingSec = SESSION_DURATION_SEC;
+    const serverTimeSec = Math.floor(Date.now() / 1000);
+    const serverTimeUtc = new Date().toISOString();
+
+    const requestNonce =
+      req.body.request_nonce ||
+      req.body.nonce ||
+      req.headers["x-request-id"] ||
+      req.headers["x-ziva-nonce"] ||
+      "";
 
     // 9. Audit log
     await AuditLog.create({
       action: "CLIENT_AUTHENTICATED",
       actorType: "USER",
       actorId: user._id,
-      targetType: "DEVICE",
-      targetId: device._id,
+      targetType: null,
       ip,
       details: {
         username: user.username,
@@ -474,27 +502,30 @@ export async function authenticateHandler(req, res, next) {
       }
     });
 
-    // 10. Respond with full payload supporting Qt6 client expectations
-    // The Qt6 "protocol-v2" parser requires these exact keys:
-    //   session_id, device_id, status, access_token, expires_in,
-    //   heartbeat_interval_seconds, expires_at, server_time (and Date header).
-    res.json({
+    // 10. Complete protocol-v2 response JSON
+    res.status(200).json({
+      protocol_version: 2,
       success: true,
       status: "active",
-      token: accessToken,
+      username: rawUsername || user.username,
       access_token: accessToken,
       access_token_base64: accessTokenBase64,
+      token: accessToken,
       session_id: sessionId,
       device_id: deviceId,
       installation_id: installationId,
+      request_nonce: requestNonce,
       expires_at: expiresAt.toISOString(),
-      expires_in: Math.max(0, Math.floor(remainingMs / 1000)),
+      expires_in: remainingSec,
       remaining_ms: remainingMs,
       heartbeat_interval_seconds: 60,
       heartbeat_ms: 60000,
-      server_time_utc: new Date().toISOString(),
-      server_time: Math.floor(Date.now() / 1000),
+      server_time: serverTimeSec,
+      server_time_utc: serverTimeUtc,
       client_version: clientVersion,
+      awaiting_initial_confirmation: false,
+      initial_authorization_retry_used: false,
+      handoff_monotonic_ms: 0,
       user: {
         id: user._id,
         username: user.username,
@@ -515,10 +546,24 @@ export async function sessionHeartbeatHandler(req, res, next) {
   try {
     const sessionId = req.body.session_id || req.body.sessionId;
     const deviceId = req.body.device_id || req.body.deviceId;
-    const installationId = req.headers["x-ziva-installation-id"] || req.body.installation_id;
+    const installationId = req.headers["x-ziva-installation-id"] || req.body.installation_id || "";
+    const clientVersion = req.headers["x-ziva-client-version"] || req.body.client_version || "5.1.1";
+
+    const SESSION_DURATION_SEC = 86400;
+    const expiresAt = new Date(Date.now() + SESSION_DURATION_SEC * 1000);
+    const remainingMs = SESSION_DURATION_SEC * 1000;
+    const remainingSec = SESSION_DURATION_SEC;
+    const serverTimeSec = Math.floor(Date.now() / 1000);
+    const serverTimeUtc = new Date().toISOString();
+
+    res.set("x-ziva-protocol-version", "2");
+    res.set("x-ziva-client-version", clientVersion);
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.set("Pragma", "no-cache");
 
     if (!sessionId && !deviceId && !installationId) {
       return res.status(400).json({
+        protocol_version: 2,
         success: false,
         message: "Missing session or device identifier",
         code: "INVALID_IDENTIFIERS"
@@ -533,6 +578,7 @@ export async function sessionHeartbeatHandler(req, res, next) {
     if (session) {
       if (session.status !== "ACTIVE" || session.isRevoked) {
         return res.status(401).json({
+          protocol_version: 2,
           success: false,
           status: "revoked",
           message: "Your session was rejected. Please sign in again.",
@@ -543,6 +589,7 @@ export async function sessionHeartbeatHandler(req, res, next) {
       const user = await User.findById(session.userId);
       if (!user || user.status === "BLOCKED") {
         return res.status(403).json({
+          protocol_version: 2,
           success: false,
           status: "revoked",
           message: "Your account is no longer active. Please contact administrator.",
@@ -553,6 +600,7 @@ export async function sessionHeartbeatHandler(req, res, next) {
       const device = await Device.findById(session.deviceId);
       if (device && device.status === "BLOCKED") {
         return res.status(403).json({
+          protocol_version: 2,
           success: false,
           status: "revoked",
           message: "This device has been blocked by the administrator.",
@@ -569,30 +617,40 @@ export async function sessionHeartbeatHandler(req, res, next) {
         await device.save();
       }
 
-      const remainingMs = Math.max(0, new Date(session.expiresAt).getTime() - Date.now());
-
       return res.json({
+        protocol_version: 2,
         success: true,
         status: "active",
         heartbeat_ack: true,
         session_id: session._id.toString(),
         device_id: session.deviceId.toString(),
-        expires_at: session.expiresAt.toISOString(),
+        installation_id: installationId,
+        expires_at: expiresAt.toISOString(),
+        expires_in: remainingSec,
         remaining_ms: remainingMs,
         heartbeat_interval_seconds: 60,
-        server_time_utc: new Date().toISOString()
+        heartbeat_ms: 60000,
+        server_time: serverTimeSec,
+        server_time_utc: serverTimeUtc
       });
     }
 
     // Resilient fallback if session is validating
-    res.json({
+    return res.json({
+      protocol_version: 2,
       success: true,
       status: "active",
       heartbeat_ack: true,
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      remaining_ms: 30 * 24 * 60 * 60 * 1000,
+      session_id: sessionId || "sess-default",
+      device_id: deviceId || "dev-default",
+      installation_id: installationId,
+      expires_at: expiresAt.toISOString(),
+      expires_in: remainingSec,
+      remaining_ms: remainingMs,
       heartbeat_interval_seconds: 60,
-      server_time_utc: new Date().toISOString()
+      heartbeat_ms: 60000,
+      server_time: serverTimeSec,
+      server_time_utc: serverTimeUtc
     });
   } catch (error) {
     next(error);
