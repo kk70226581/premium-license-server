@@ -381,7 +381,7 @@ export async function authenticateHandler(req, res, next) {
       // If active user created by admin without subscription, grant 30 days
       subscription = await Subscription.create({
         userId: user._id,
-        plan: "STANDARD",
+        plan: "MONTHLY",
         status: "ACTIVE",
         expiryDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       });

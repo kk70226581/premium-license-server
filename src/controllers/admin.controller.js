@@ -399,9 +399,14 @@ export async function createUser(req, res, next) {
       }
     });
 
+    let planType = (plan || "MONTHLY").toUpperCase();
+    if (!["MONTHLY", "YEARLY", "LIFETIME", "STANDARD", "CUSTOM", "ANNUAL"].includes(planType)) {
+      planType = "MONTHLY";
+    }
+
     const subscription = await Subscription.create({
       userId: user._id,
-      plan: plan.toUpperCase(),
+      plan: planType,
       status: "ACTIVE",
       expiryDate,
       startDate: new Date()

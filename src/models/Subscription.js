@@ -10,7 +10,8 @@ const subscriptionSchema = new mongoose.Schema(
     },
     plan: {
       type: String,
-      enum: ["MONTHLY", "YEARLY", "LIFETIME"],
+      enum: ["MONTHLY", "YEARLY", "LIFETIME", "STANDARD", "CUSTOM", "ANNUAL"],
+      default: "MONTHLY",
       required: true
     },
     status: {
