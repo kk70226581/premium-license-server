@@ -33,9 +33,9 @@ export const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
   password: z.string().min(1, "Password is required"),
   installationId: z.string().min(1, "Installation UUID is required"),
-  deviceName: z.string().min(1, "Device name is required"),
+  deviceName: z.string().min(1, "Device name is required").optional().default("Windows Client"),
   platform: z.string().default("WINDOWS"),
-  publicKey: z.string().min(1, "Device public key is required"),
+  publicKey: z.string().min(1).optional().default(""),
   nonce: z.string().optional(),
   signature: z.string().optional(),
   appVersion: z.string().optional()
