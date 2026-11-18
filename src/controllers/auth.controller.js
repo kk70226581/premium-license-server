@@ -108,14 +108,40 @@ export async function login(req, res, next) {
     const {
       username,
       password,
-      installationId,
-      deviceName,
+      installationId: bodyInstallationId,
+      installation_id: bodyInstallationIdSnake,
+      deviceName: bodyDeviceName,
+      device_name: bodyDeviceNameSnake,
       platform,
       publicKey,
       nonce,
       signature,
-      appVersion
+      appVersion,
+      client_version: bodyClientVersion,
+      request_nonce: bodyRequestNonce,
+      requestNonce: bodyRequestNonceCamel
     } = req.body;
+
+    // The Qt6 client sends "installation_id" / "request_nonce" (snake_case) and
+    // also sets the installation id header. Read every variant so the response
+    // can echo back exactly what the client expects.
+    const installationId =
+      bodyInstallationId ||
+      bodyInstallationIdSnake ||
+      req.headers["x-ziva-installation-id"] ||
+      "";
+    const requestNonce =
+      bodyRequestNonce ||
+      bodyRequestNonceCamel ||
+      req.headers["x-ziva-nonce"] ||
+      req.headers["x-request-id"] ||
+      "";
+    const deviceName = bodyDeviceName || bodyDeviceNameSnake || "Windows Client";
+    const clientVersion =
+      appVersion ||
+      bodyClientVersion ||
+      req.headers["x-ziva-client-version"] ||
+      "5.1.1";
 
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers["user-agent"];
@@ -218,8 +244,11 @@ export async function login(req, res, next) {
     res.json({
       protocol_version: 2,
       success: true,
-      status: "active",
+      // The Qt6 protocol-v2 parser requires status === "success".
+      status: "success",
+      state: "active",
       message: "Login successful",
+      username: user.username,
       access_token: accessTokenV2,
       access_token_base64: accessTokenBase64V2,
       token: accessTokenV2,
@@ -227,14 +256,16 @@ export async function login(req, res, next) {
       session_id: sessionIdV2,
       device_id: deviceIdV2,
       installation_id: device.installationId,
+      // The client compares this echo against the nonce it generated.
+      request_nonce: requestNonce,
       expires_at: expiresAtV2.toISOString(),
-      expires_in: Math.max(300, Math.min(90000, Math.floor(remainingMsV2 / 1000))),
+      expires_in: Math.max(300, Math.min(86400, Math.floor(remainingMsV2 / 1000))),
       remaining_ms: remainingMsV2,
       heartbeat_interval_seconds: 60,
       heartbeat_ms: 60000,
       server_time: Math.floor(Date.now() / 1000),
       server_time_utc: new Date().toISOString(),
-      client_version: appVersion || "5.1.1",
+      client_version: clientVersion,
       device: {
         id: device._id,
         deviceName: device.deviceName,
@@ -550,7 +581,8 @@ export async function authenticateHandler(req, res, next) {
     res.status(200).json({
       protocol_version: 2,
       success: true,
-      status: "active",
+      status: "success",
+      state: "active",
       username: rawUsername || user.username,
       access_token: accessToken,
       access_token_base64: accessTokenBase64,
